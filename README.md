@@ -28,13 +28,24 @@ O macOS pede "Gravação de Áudio do Sistema" quando o primeiro app começar a 
 
 - `Sources/MixerCore`: áudio (descoberta, `TapSession`, `SessionManager`, `GainControl`, `DeviceWatcher`) e modelo (`VolumeStore`, `SilenceDetector`). Sem UI, testável.
 - `Sources/Mixer`: app SwiftUI (`MenuBarExtra`).
-- `Sources/Spike`, `Sources/EngineDemo`: CLIs de teste do áudio, sem UI.
+- `Tools/` (pacote separado, fora do build padrão): CLIs `Spike` e `EngineDemo` pra testar o áudio sem UI. Rode com `cd Tools && swift build`.
 - `Sources/CAtomics`: atômicos em C, pra thread de áudio ficar sem lock (o módulo `Synchronization` só existe no macOS 15+).
 
 ## Salvaguardas
 
 - O app ignora qualquer processo do próprio executável e só roda uma instância (senão uma capturaria a outra e o som entra em loop).
 - A saída é cortada em ±1 depois do ganho.
+
+## Como o tap protege contra mudo por permissão negada
+
+Cada sessão começa em `probing`: tap `.unmuted`, que só mede o pico e não escreve na saída. Quando chega pico > 0 a permissão está confirmada (`permissionConfirmed`, só em memória) e as sessões são recriadas em `active` (`.mutedWhenTapped` + escrita na saída). Se tudo vier zerado por 5 s, volta a `probing` e o app original deixa de ficar mudo. O tap é recriado (não confirmei se `muteBehavior` pode mudar depois de criado), então o primeiro app de cada execução pode ter um corte curto.
+
+## Riscos conhecidos
+
+- **API privada:** `responsibility_get_pid_responsible_for_pid`, via `dlsym`, só resolve o app dono de um processo auxiliar. Se não existir, o app cai na cadeia de processos pai e no prefixo do bundle ID. Não usa a API privada do TCC.
+- **AirPods/fone com microfone ativo:** o buffer do tap é escolhido pelo formato, não pela posição. Se o layout for ambíguo (ex.: tap estéreo + microfone estéreo), a sessão falha com erro em vez de mandar o buffer errado. Não testado com hardware real.
+- **DRM:** conteúdo protegido chega zerado e pode mostrar "Não está chegando som".
+- Sessão que falha tenta de novo após 1, 2 e 4 s antes de mostrar "tentar de novo".
 
 ## Permissão entre rebuilds (etapa 9): NÃO TESTADO
 

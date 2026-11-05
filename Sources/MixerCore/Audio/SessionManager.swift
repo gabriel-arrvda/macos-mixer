@@ -1,4 +1,24 @@
+import AppKit
 import Foundation
+
+/// Fábrica de verdade: tap, aggregate device e IOProc na saída padrão de agora.
+public enum LiveSessions {
+    public static let factory: SessionFactory = { request in
+        let output = try OutputDevice.current()
+        return try TapSession(processObjects: request.objects, outputUID: output.uid,
+                              fallbackSampleRate: output.nominalSampleRate(),
+                              initialGain: request.initialGain, mode: request.mode)
+    }
+}
+
+/// Pedido de criação de sessão (o que a fábrica precisa saber).
+public struct SessionRequest {
+    public let objects: [UInt32]
+    public let mode: SessionMode
+    public let initialGain: Float
+}
+
+public typealias SessionFactory = (SessionRequest) throws -> AudioSession
 
 /// Mantém uma `TapSession` por app que está tocando (ou parou há menos de 5 s) e expõe a lista pra UI.
 ///
@@ -8,6 +28,8 @@ public final class SessionManager {
     public static let pollInterval: TimeInterval = 0.5
     public static let deviceChangeDelay: TimeInterval = 0.3
     public static let saveDelay: TimeInterval = 0.3
+    /// Esperas antes de cada nova tentativa de uma sessão que falhou (1 s, 2 s, 4 s). Depois disso vira `.failed`.
+    public static let retryBackoff: [TimeInterval] = [1, 2, 4]
 
     /// Lista atualizada (ordem alfabética). Chamado a cada mudança.
     public var onEntriesChange: (([AppEntry]) -> Void)?
@@ -16,16 +38,27 @@ public final class SessionManager {
 
     public private(set) var entries: [AppEntry] = []
     public private(set) var output: OutputDevice?
+    /// Verdadeiro depois que algum tap recebeu sinal diferente de zero: a permissão existe.
+    /// Não é persistido, porque um rebuild pode perder a permissão.
+    public private(set) var permissionConfirmed = false
 
     private struct Slot {
         var group: AppGroup
-        var session: TapSession?
+        var session: AudioSession?
+        var mode: SessionMode
         var status: SessionStatus
-        /// Conjunto de processos com que a sessão foi (ou tentou ser) criada.
-        var attemptedObjects: [UInt32]
+        /// Processos que o tap atual cobre.
+        var coveredObjects: Set<UInt32>
+        /// Nenhuma tentativa ainda (ou pedido de recomeço).
+        var needsSession: Bool
+        var failures: Int
+        var retryAt: Date?
+        /// Maior pico de entrada desde a última leitura de `takePeaks`.
+        var peak: Float
     }
 
     private let store: VolumeStore
+    private let factory: SessionFactory
     private let now: () -> Date
     private let watcher = DeviceWatcher()
     private var presence: PresenceTracker
@@ -35,9 +68,13 @@ public final class SessionManager {
     private var timer: Timer?
     private var deviceChangeWork: DispatchWorkItem?
     private var saveWork: DispatchWorkItem?
+    private var terminationObserver: NSObjectProtocol?
 
-    public init(store: VolumeStore = VolumeStore(), presence: PresenceTracker = PresenceTracker(), now: @escaping () -> Date = Date.init) {
+    public init(store: VolumeStore = VolumeStore(), presence: PresenceTracker = PresenceTracker(),
+                now: @escaping () -> Date = Date.init,
+                factory: @escaping SessionFactory = LiveSessions.factory) {
         self.store = store
+        self.factory = factory
         self.presence = presence
         self.now = now
     }
@@ -46,6 +83,7 @@ public final class SessionManager {
 
     public func start() {
         guard timer == nil else { return }
+        installTerminationObserver()
         output = try? OutputDevice.current()
         watcher.onChange = { [weak self] in
             MainActor.assumeIsolated { self?.scheduleDeviceRebuild() }
@@ -55,6 +93,15 @@ public final class SessionManager {
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
+    }
+
+    /// Ao sair do app (inclusive por "Sair"), grava os ajustes pendentes e desfaz os taps.
+    func installTerminationObserver() {
+        guard terminationObserver == nil else { return }
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop() }
+        }
     }
 
     /// Para tudo e devolve o áudio dos apps ao normal.
@@ -89,17 +136,36 @@ public final class SessionManager {
         setMuted(!setting(for: key).isMuted, for: key)
     }
 
-    /// Tenta de novo as sessões que falharam.
+    /// Tenta de novo as sessões que desistiram de vez.
     public func retryFailed() {
-        for key in slots.keys where slots[key]?.status != .active && slots[key]?.session == nil {
-            slots[key]?.attemptedObjects = []
+        for key in slots.keys {
+            guard case .failed = slots[key]?.status else { continue }
+            slots[key]?.needsSession = true
+            slots[key]?.failures = 0
+            slots[key]?.retryAt = nil
         }
         refresh()
     }
 
     /// Maior amplitude de entrada de cada app desde a última leitura (0 = silêncio ou sem permissão).
+    /// É o único leitor do pico das sessões: a sondagem e a UI usam o mesmo valor.
     public func takePeaks() -> [String: Float] {
-        slots.compactMapValues { $0.session?.gain.takePeak() }
+        var result: [String: Float] = [:]
+        for key in slots.keys where slots[key]?.session != nil {
+            result[key] = slots[key]?.peak
+            slots[key]?.peak = 0
+        }
+        return result
+    }
+
+    /// O sinal sumiu em todos os apps ativos: desfaz os taps que silenciam o original e volta a sondar.
+    /// Assim o app deixa de ficar mudo se a permissão foi perdida.
+    public func demoteToProbing() {
+        permissionConfirmed = false
+        for key in slots.keys where slots[key]?.mode == .active && slots[key]?.session != nil {
+            rebuild(key, mode: .probing)
+        }
+        publish()
     }
 
     // MARK: - Atualização
@@ -109,6 +175,26 @@ public final class SessionManager {
         let resolver = OwnerResolver()
         let groups = ProcessGrouper.group(processes, excluding: SelfProcesses.pids(among: processes.map(\.pid)), resolver: resolver.owner(of:))
         apply(groups: groups)
+        pollSessions()
+    }
+
+    /// Lê o pico de cada sessão. Na sondagem, pico acima de zero confirma a permissão: a partir daí
+    /// todas as sessões passam a `.active` (com mudo do original) e as novas já nascem assim.
+    func pollSessions() {
+        var sawSignal = false
+        for key in slots.keys {
+            guard let session = slots[key]?.session else { continue }
+            let peak = session.gain.takePeak()
+            let previous = slots[key]?.peak ?? 0
+            slots[key]?.peak = max(previous, peak)
+            if slots[key]?.mode == .probing, peak > SilenceDetector.silenceThreshold { sawSignal = true }
+        }
+        guard sawSignal, !permissionConfirmed else { return }
+        permissionConfirmed = true
+        for key in slots.keys where slots[key]?.mode == .probing && slots[key]?.session != nil {
+            rebuild(key, mode: .active)
+        }
+        publish()
     }
 
     /// Separado de `refresh` pra poder alimentar com dados falsos.
@@ -132,24 +218,57 @@ public final class SessionManager {
 
     private func ensureSession(for group: AppGroup) {
         let key = group.owner.key
-        var slot = slots[key] ?? Slot(group: group, session: nil, status: .connecting, attemptedObjects: [])
+        var slot = slots[key] ?? Slot(group: group, session: nil, mode: .probing, status: .connecting,
+                                      coveredObjects: [], needsSession: true, failures: 0, retryAt: nil, peak: 0)
         slot.group = group
-        if slot.attemptedObjects != group.objectIDs {
-            // Conjunto de processos novo (ou primeira vez): recria a sessão.
+        // Só um processo tocando que o tap atual ainda não cobre derruba a sessão. Mudança em processo
+        // ocioso, ou um que parou de tocar, mantém o tap: recriar faria o app voltar a tocar sem ganho.
+        if !slot.needsSession, slot.session != nil, !slot.coveredObjects.isSuperset(of: group.playingObjectIDs) {
+            slot.needsSession = true
+            slot.failures = 0
+            slot.retryAt = nil
+        }
+        let retryDue = slot.session == nil && slot.status == .connecting && !slot.needsSession
+            && (slot.retryAt.map { now() >= $0 } ?? false)
+        if slot.needsSession || retryDue {
             slot.session?.stop()
             slot.session = nil
-            slot.attemptedObjects = group.objectIDs
-            do {
-                guard let output = output ?? (try? OutputDevice.current()) else { throw AudioError("sem saída de áudio") }
-                self.output = output
-                slot.session = try TapSession(processObjects: group.objectIDs, outputUID: output.uid,
-                                              fallbackSampleRate: output.nominalSampleRate(),
-                                              initialGain: setting(for: key).effectiveGain)
-                slot.status = .active
-            } catch {
+            attempt(&slot, key: key, mode: permissionConfirmed ? .active : .probing)
+        }
+        slots[key] = slot
+    }
+
+    /// Cria a sessão. Falha vira nova tentativa com espera crescente; esgotadas as tentativas, `.failed`.
+    private func attempt(_ slot: inout Slot, key: String, mode: SessionMode) {
+        slot.needsSession = false
+        slot.mode = mode
+        slot.peak = 0
+        let objects = slot.group.objectIDs
+        do {
+            slot.session = try factory(SessionRequest(objects: objects, mode: mode,
+                                                      initialGain: setting(for: key).effectiveGain))
+            slot.coveredObjects = Set(objects)
+            slot.status = .active
+            slot.failures = 0
+            slot.retryAt = nil
+        } catch {
+            slot.failures += 1
+            if slot.failures > Self.retryBackoff.count {
                 slot.status = .failed("\(error)")
+                slot.retryAt = nil
+            } else {
+                slot.status = .connecting
+                slot.retryAt = now().addingTimeInterval(Self.retryBackoff[slot.failures - 1])
             }
         }
+    }
+
+    /// Troca a sessão de um app por outra na fase pedida, mantendo o resto do estado.
+    private func rebuild(_ key: String, mode: SessionMode) {
+        guard var slot = slots[key] else { return }
+        slot.session?.stop()
+        slot.session = nil
+        attempt(&slot, key: key, mode: mode)
         slots[key] = slot
     }
 
@@ -171,7 +290,9 @@ public final class SessionManager {
         for key in slots.keys {
             slots[key]?.session?.stop()
             slots[key]?.session = nil
-            slots[key]?.attemptedObjects = []
+            slots[key]?.needsSession = true
+            slots[key]?.failures = 0
+            slots[key]?.retryAt = nil
             slots[key]?.status = .connecting
         }
         onOutputChange?(device)

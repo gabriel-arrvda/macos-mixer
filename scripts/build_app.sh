@@ -12,6 +12,17 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 EXECUTABLE="Mixer"   # nome do produto no Package.swift
 APP="$ROOT/build/$APP_NAME.app"
 
+# Valida os valores que entram no sed/Info.plist (evita quebrar com | & < > " etc.).
+validate() {
+  if [[ ! "$2" =~ ^[A-Za-z0-9._\ -]+$ ]]; then
+    echo "ERRO: $1 inválido ('$2'). Use só letras, números, espaço, ponto, hífen e sublinhado." >&2
+    exit 1
+  fi
+}
+validate APP_NAME "$APP_NAME"
+validate BUNDLE_ID "$BUNDLE_ID"
+validate VERSION "$VERSION"
+
 cd "$ROOT"
 swift build -c release --product "$EXECUTABLE"
 BIN="$(swift build -c release --product "$EXECUTABLE" --show-bin-path)/$EXECUTABLE"

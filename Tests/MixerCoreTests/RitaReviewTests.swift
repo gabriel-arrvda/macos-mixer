@@ -8,7 +8,7 @@ final class RitaReviewTests: XCTestCase {
         return VolumeStore(defaults: UserDefaults(suiteName: suite)!, prefix: "t")
     }
 
-    /// Salvamento é adiado 0,3 s: sem stop()/flush antes de sair, o ajuste se perde.
+    /// Salvamento é adiado 0,3 s: só o stop()/flush grava. O encerramento chama stop() (ver SessionStateTests).
     func testVolumeIsOnlyPersistedAfterFlush() {
         let store = makeStore()
         let manager = SessionManager(store: store)
@@ -27,17 +27,5 @@ final class RitaReviewTests: XCTestCase {
         let v = store.load("a")
         XCTAssertFalse(v.isMuted)
         XCTAssertEqual(v.volume, 0.7, accuracy: 0.001)
-    }
-
-    /// Sessão que falha (objeto inexistente) vira .failed e não é refeita no próximo ciclo.
-    func testFailedSessionIsNotRetriedUntilObjectsChange() {
-        let manager = SessionManager(store: makeStore())
-        let owner = AppOwner(key: "fake.app", name: "Fake", pid: 99999)
-        let group = AppGroup(owner: owner, objectIDs: [4_000_000], isPlaying: true)
-        manager.apply(groups: [group])
-        guard case .failed = manager.entries.first?.status else { return XCTFail("esperava .failed: \(String(describing: manager.entries.first?.status))") }
-        manager.apply(groups: [group])
-        guard case .failed = manager.entries.first?.status else { return XCTFail() }
-        manager.stop()
     }
 }

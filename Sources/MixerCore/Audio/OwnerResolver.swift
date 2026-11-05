@@ -14,10 +14,26 @@ public final class OwnerResolver {
 
     /// Tira uma foto dos apps abertos. Crie um resolver por atualização da lista.
     public init() {
-        let regular = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        let regular = NSWorkspace.shared.runningApplications.filter(Self.countsAsApp)
         apps = Dictionary(regular.map { ($0.processIdentifier, $0) }, uniquingKeysWith: { first, _ in first })
         appsByBundleID = Dictionary(regular.compactMap { app in app.bundleIdentifier.map { ($0, app) } },
                                     uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Apps normais, e apps só de barra de menu (`.accessory`) que sejam um bundle de primeiro nível.
+    /// Helpers de Chrome e Electron também são `.accessory`, mas ficam dentro de outro `.app`: esses
+    /// continuam sendo agrupados pelo app dono.
+    static func countsAsApp(_ app: NSRunningApplication) -> Bool {
+        switch app.activationPolicy {
+        case .regular: return true
+        case .accessory: return isTopLevelBundle(app.bundleURL?.path)
+        default: return false
+        }
+    }
+
+    static func isTopLevelBundle(_ path: String?) -> Bool {
+        guard let path, path.hasSuffix(".app") else { return false }
+        return path.components(separatedBy: ".app/").count == 1
     }
 
     public func owner(of process: AudioProcessInfo) -> AppOwner? {

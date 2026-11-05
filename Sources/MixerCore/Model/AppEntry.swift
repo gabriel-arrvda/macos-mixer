@@ -35,11 +35,15 @@ public struct AppGroup: Equatable, Sendable {
     public let owner: AppOwner
     public let objectIDs: [UInt32]
     public let isPlaying: Bool
+    /// Subconjunto de `objectIDs` que está emitindo som agora.
+    public let playingObjectIDs: [UInt32]
 
-    public init(owner: AppOwner, objectIDs: [UInt32], isPlaying: Bool) {
+    /// Sem `playingObjectIDs`, assume que todos os processos tocam quando o grupo toca.
+    public init(owner: AppOwner, objectIDs: [UInt32], isPlaying: Bool, playingObjectIDs: [UInt32]? = nil) {
         self.owner = owner
         self.objectIDs = objectIDs
         self.isPlaying = isPlaying
+        self.playingObjectIDs = playingObjectIDs ?? (isPlaying ? objectIDs : [])
     }
 }
 

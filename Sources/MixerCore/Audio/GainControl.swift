@@ -13,8 +13,12 @@ public final class GainControl: @unchecked Sendable {
     private let shared: UnsafeMutablePointer<UInt32>   // [0] alvo, [1] pico de entrada
     private let currentGain: UnsafeMutablePointer<Float>
     private let step: Float                             // variação máxima do ganho por frame
+    /// Posição, na lista de buffers de entrada do aggregate device, do buffer que carrega o áudio do tap.
+    private let inputIndex: Int
 
-    public init(sampleRate: Double, rampSeconds: Double = GainControl.defaultRampSeconds, initialGain: Float = 1) {
+    public init(sampleRate: Double, rampSeconds: Double = GainControl.defaultRampSeconds,
+                initialGain: Float = 1, inputIndex: Int = 0) {
+        self.inputIndex = inputIndex
         let frames = max(sampleRate * rampSeconds, 1)
         step = Float(1.0 / frames)
         let initial = GainControl.clamp(initialGain)
@@ -47,7 +51,18 @@ public final class GainControl: @unchecked Sendable {
 
     // MARK: - Thread de áudio
 
-    /// Copia `input` pra `output` aplicando o ganho. Buffers sem entrada correspondente saem em silêncio.
+    /// Só mede o pico do buffer do tap. Não toca na saída: usado na sondagem, antes de a permissão ser confirmada.
+    public func processProbe(input: UnsafePointer<AudioBufferList>) {
+        let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+        guard inputIndex < inputs.count, let source = inputs[inputIndex].mData else { return }
+        let samples = Int(inputs[inputIndex].mDataByteSize) / MemoryLayout<Float>.size
+        let data = source.assumingMemoryBound(to: Float.self)
+        var peak: Float = 0
+        for index in 0..<samples { peak = max(peak, abs(data[index])) }
+        ca_max_u32(shared + 1, peak.bitPattern)
+    }
+
+    /// Copia o buffer do tap pro primeiro buffer de `output` aplicando o ganho. O resto da saída fica em silêncio.
     public func process(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>) {
         let inputs = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
         let outputs = UnsafeMutableAudioBufferListPointer(output)
@@ -58,14 +73,15 @@ public final class GainControl: @unchecked Sendable {
 
         for index in 0..<outputs.count {
             guard let destination = outputs[index].mData else { continue }
-            guard index < inputs.count, let source = inputs[index].mData else {
-                memset(destination, 0, Int(outputs[index].mDataByteSize))
+            let total = Int(outputs[index].mDataByteSize)
+            guard index == 0, inputIndex < inputs.count, let source = inputs[inputIndex].mData else {
+                memset(destination, 0, total)
                 continue
             }
-            let inChannels = max(Int(inputs[index].mNumberChannels), 1)
+            let inChannels = max(Int(inputs[inputIndex].mNumberChannels), 1)
             let outChannels = max(Int(outputs[index].mNumberChannels), 1)
-            let inFrames = Int(inputs[index].mDataByteSize) / (MemoryLayout<Float>.size * inChannels)
-            let outFrames = Int(outputs[index].mDataByteSize) / (MemoryLayout<Float>.size * outChannels)
+            let inFrames = Int(inputs[inputIndex].mDataByteSize) / (MemoryLayout<Float>.size * inChannels)
+            let outFrames = total / (MemoryLayout<Float>.size * outChannels)
             let frames = min(inFrames, outFrames)
             end = GainControl.apply(
                 source: source.assumingMemoryBound(to: Float.self),
@@ -74,12 +90,16 @@ public final class GainControl: @unchecked Sendable {
                 startGain: start, targetGain: target, step: step, peak: &peak)
             // Sobra de buffer de saída (se houver) fica em silêncio.
             let written = frames * outChannels * MemoryLayout<Float>.size
-            let total = Int(outputs[index].mDataByteSize)
             if total > written { memset(destination + written, 0, total - written) }
         }
 
         currentGain.pointee = end
         ca_max_u32(shared + 1, peak.bitPattern)
+    }
+
+    /// Só pra testes: simula um pico de entrada.
+    func recordPeak(_ value: Float) {
+        ca_max_u32(shared + 1, value.bitPattern)
     }
 
     /// Núcleo da conta, separado do Core Audio pra poder testar. Retorna o ganho no fim do bloco.
@@ -95,12 +115,24 @@ public final class GainControl: @unchecked Sendable {
                       peak: inout Float) -> Float {
         var gain = startGain
         let shared = min(sourceChannels, destinationChannels)
+        // Saída mono com entrada de vários canais: mistura todos em vez de descartar os outros.
+        let mixesDown = destinationChannels == 1 && sourceChannels > 1
         for frame in 0..<frames {
             if gain != targetGain {
                 gain = gain < targetGain ? min(gain + step, targetGain) : max(gain - step, targetGain)
             }
             let inBase = frame * sourceChannels
             let outBase = frame * destinationChannels
+            if mixesDown {
+                var sum: Float = 0
+                for channel in 0..<sourceChannels {
+                    let sample = source[inBase + channel]
+                    peak = max(peak, abs(sample))
+                    sum += sample
+                }
+                destination[outBase] = min(max(sum / Float(sourceChannels) * gain, -1), 1)
+                continue
+            }
             for channel in 0..<shared {
                 let sample = source[inBase + channel]
                 peak = max(peak, abs(sample))

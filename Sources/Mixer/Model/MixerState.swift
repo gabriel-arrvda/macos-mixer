@@ -95,7 +95,11 @@ final class MixerState: ObservableObject {
         let active = entries.filter { $0.status == .active && $0.isPlaying }
         switch detector.update(peaks: active.map { peaks[$0.id] ?? 0 }, now: Date()) {
         case .receiving: signal = .receiving
-        case .silent: signal = .silent
+        case .silent:
+            signal = .silent
+            // Desfaz os taps que silenciam o original e volta a sondar: sem permissão, o app não pode ficar mudo.
+            manager.demoteToProbing()
+            detector = SilenceDetector(threshold: AppConstants.silenceThreshold)
         case .idle: if signal == .silent { signal = .unknown }
         case .pending: break
         }
