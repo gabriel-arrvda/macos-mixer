@@ -1,0 +1,42 @@
+import Foundation
+
+public struct AppVolume: Equatable, Sendable {
+    public var volume: Float
+    public var isMuted: Bool
+
+    public static let `default` = AppVolume(volume: 1, isMuted: false)
+
+    public init(volume: Float, isMuted: Bool) {
+        self.volume = volume
+        self.isMuted = isMuted
+    }
+
+    /// Ganho aplicado na thread de áudio.
+    public var effectiveGain: Float { isMuted ? 0 : volume }
+}
+
+/// Guarda volume e mudo por app (chave do dono) no `UserDefaults`.
+public final class VolumeStore {
+    private let defaults: UserDefaults
+    private let prefix: String
+
+    public init(defaults: UserDefaults = .standard, prefix: String = "mixer") {
+        self.defaults = defaults
+        self.prefix = prefix
+    }
+
+    public func load(_ key: String) -> AppVolume {
+        guard let stored = defaults.object(forKey: volumeKey(key)) as? Double, stored.isFinite else {
+            return AppVolume(volume: AppVolume.default.volume, isMuted: defaults.bool(forKey: mutedKey(key)))
+        }
+        return AppVolume(volume: Float(min(max(stored, 0), 1)), isMuted: defaults.bool(forKey: mutedKey(key)))
+    }
+
+    public func save(_ value: AppVolume, for key: String) {
+        defaults.set(Double(min(max(value.volume, 0), 1)), forKey: volumeKey(key))
+        defaults.set(value.isMuted, forKey: mutedKey(key))
+    }
+
+    private func volumeKey(_ key: String) -> String { "\(prefix).volume.\(key)" }
+    private func mutedKey(_ key: String) -> String { "\(prefix).muted.\(key)" }
+}
