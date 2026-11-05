@@ -116,7 +116,7 @@ private struct SilenceBanner: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text("Não está chegando som. Verifique a permissão.")
+            Text("Não está chegando som. Verifique a permissão ou se o conteúdo é protegido.")
                 .font(.system(size: 11))
                 .lineLimit(2)
             Spacer(minLength: 4)
