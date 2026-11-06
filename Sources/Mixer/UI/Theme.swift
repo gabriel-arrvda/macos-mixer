@@ -32,11 +32,13 @@ enum AppearanceMode: String, CaseIterable {
         mode.apply()
     }
 
+    /// Só chamar depois que o app subiu (no `init` do `App` o `NSApp` ainda é nil).
     @MainActor func apply() {
+        guard let app = NSApp else { return }
         switch self {
-        case .light: NSApp.appearance = NSAppearance(named: .aqua)
-        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
-        case .system: NSApp.appearance = nil
+        case .light: app.appearance = NSAppearance(named: .aqua)
+        case .dark: app.appearance = NSAppearance(named: .darkAqua)
+        case .system: app.appearance = nil
         }
     }
 }
