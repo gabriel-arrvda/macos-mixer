@@ -158,6 +158,13 @@ public final class SessionManager {
         return result
     }
 
+    /// Nível de saída de cada app (0...1, depois do ganho) desde a última leitura. Só pro medidor da UI.
+    public func takeLevels() -> [String: Float] {
+        var result: [String: Float] = [:]
+        for (key, slot) in slots { if let session = slot.session { result[key] = session.gain.takeLevel() } }
+        return result
+    }
+
     /// O sinal sumiu em todos os apps ativos: desfaz os taps que silenciam o original e volta a sondar.
     /// Assim o app deixa de ficar mudo se a permissão foi perdida.
     public func demoteToProbing() {

@@ -83,6 +83,15 @@ final class GainControlTests: XCTestCase {
         XCTAssertEqual(gain.takePeak(), 0)
     }
 
+    func testLevelIsOutputAfterGainAndIndependentFromPeak() {
+        let gain = GainControl(sampleRate: 48_000, initialGain: 0.5)
+        let list = AudioBufferListHelper(frames: 4, channels: 2, value: 0.8)
+        gain.process(input: list.input, output: list.output)
+        XCTAssertEqual(gain.takeLevel(), 0.4, accuracy: 1e-6)   // 0.8 × 0.5
+        XCTAssertEqual(gain.takeLevel(), 0)
+        XCTAssertEqual(gain.takePeak(), 0.8, accuracy: 1e-6)    // pico de entrada não foi consumido
+    }
+
     func testProcessWithAudioBufferList() {
         let gain = GainControl(sampleRate: 48_000, initialGain: 0.5)
         let list = AudioBufferListHelper(frames: 4, channels: 2, value: 1)

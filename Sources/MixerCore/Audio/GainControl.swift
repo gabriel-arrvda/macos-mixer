@@ -10,7 +10,7 @@ import Foundation
 public final class GainControl: @unchecked Sendable {
     public static let defaultRampSeconds = 0.02
 
-    private let shared: UnsafeMutablePointer<UInt32>   // [0] alvo, [1] pico de entrada
+    private let shared: UnsafeMutablePointer<UInt32>   // [0] alvo, [1] pico de entrada, [2] nível de saída
     private let currentGain: UnsafeMutablePointer<Float>
     private let step: Float                             // variação máxima do ganho por frame
     /// Posição, na lista de buffers de entrada do aggregate device, do buffer que carrega o áudio do tap.
@@ -22,8 +22,8 @@ public final class GainControl: @unchecked Sendable {
         let frames = max(sampleRate * rampSeconds, 1)
         step = Float(1.0 / frames)
         let initial = GainControl.clamp(initialGain)
-        shared = .allocate(capacity: 2)
-        shared.initialize(repeating: 0, count: 2)
+        shared = .allocate(capacity: 3)
+        shared.initialize(repeating: 0, count: 3)
         shared[0] = initial.bitPattern
         currentGain = .allocate(capacity: 1)
         currentGain.initialize(to: initial)
@@ -46,6 +46,13 @@ public final class GainControl: @unchecked Sendable {
     }
 
     /// Limita a 0...`AppVolume.maxVolume` (até 400%). NaN vira 1.
+    /// Maior amplitude que saiu pro alto-falante (depois do ganho) desde a última chamada.
+    /// Leitor separado de `takePeak`, pra o medidor da UI não interferir na detecção de silêncio.
+    /// Na sondagem o app toca sem ganho, então o nível é o próprio pico de entrada.
+    public func takeLevel() -> Float {
+        Float(bitPattern: ca_exchange_u32(shared + 2, 0))
+    }
+
     static func clamp(_ gain: Float) -> Float { AppVolume.clamp(gain) }
 
     // MARK: - Thread de áudio
@@ -59,6 +66,7 @@ public final class GainControl: @unchecked Sendable {
         var peak: Float = 0
         for index in 0..<samples { peak = max(peak, abs(data[index])) }
         ca_max_u32(shared + 1, peak.bitPattern)
+        ca_max_u32(shared + 2, peak.bitPattern)
     }
 
     /// Copia o buffer do tap pro primeiro buffer de `output` aplicando o ganho. O resto da saída fica em silêncio.
@@ -69,6 +77,7 @@ public final class GainControl: @unchecked Sendable {
         let start = currentGain.pointee
         var end = start
         var peak: Float = 0
+        var level: Float = 0
 
         for index in 0..<outputs.count {
             guard let destination = outputs[index].mData else { continue }
@@ -90,10 +99,13 @@ public final class GainControl: @unchecked Sendable {
             // Sobra de buffer de saída (se houver) fica em silêncio.
             let written = frames * outChannels * MemoryLayout<Float>.size
             if total > written { memset(destination + written, 0, total - written) }
+            let out = destination.assumingMemoryBound(to: Float.self)
+            for sample in 0..<(frames * outChannels) { level = max(level, abs(out[sample])) }
         }
 
         currentGain.pointee = end
         ca_max_u32(shared + 1, peak.bitPattern)
+        ca_max_u32(shared + 2, level.bitPattern)
     }
 
     /// Só pra testes: simula um pico de entrada.
