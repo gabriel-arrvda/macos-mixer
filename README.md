@@ -2,6 +2,14 @@
 
 Mixer de volume por app para macOS 14.4+, na barra de menu. Slider e mudo por app, usando *Core Audio process taps* (sem driver virtual). Uso pessoal, assinatura ad-hoc.
 
+## O que o painel faz
+
+- **Saída do sistema:** o cartão do topo mostra a saída padrão; clicar troca de dispositivo. Embaixo ficam o volume geral (o mesmo do teclado) e o do microfone padrão, com mudo.
+- **Por app:** medidor de nível (depois do ganho), fader de 0 a 400% com o 100% marcado como "U", caixa de porcentagem que aceita digitação (`75`, `75%`, `M` para silenciar) e botão de saída para mandar o app para outro dispositivo.
+- **Cores:** slider, medidor e foco da caixa usam a cor mais viva do ícone do app.
+- **Aparência:** Ajustes › Claro, Escuro ou Automático.
+- **Teclado:** ↑↓ escolhem o canal, ←→ mudam 5% (Shift: 10%), M silencia, S abre a escolha de saída. Na caixa de porcentagem, ↑↓ mudam 1% (Shift: 10%), Enter confirma e Esc cancela.
+
 ## Comandos
 
 ```
@@ -41,6 +49,10 @@ O macOS pede "Gravação de Áudio do Sistema" quando o primeiro app começar a 
 Cada sessão começa em `probing`: tap `.unmuted`, que só mede o pico e não escreve na saída. Quando chega pico > 0 a permissão está confirmada (`permissionConfirmed`, só em memória) e as sessões são recriadas em `active` (`.mutedWhenTapped` + escrita na saída). Se tudo vier zerado por 5 s, volta a `probing` e o app original deixa de ficar mudo. O tap é recriado (não confirmei se `muteBehavior` pode mudar depois de criado), então o primeiro app de cada execução pode ter um corte curto.
 
 ## Riscos conhecidos
+
+- **Ganho acima de 100%:** a saída é cortada em ±1 depois do ganho. Com conteúdo já alto, 200% a 400% distorce.
+- **Medidor da saída:** mostra o maior nível entre os apps que o Mixer controla, antes do volume do dispositivo. O microfone não tem medidor, porque isso exigiria capturar o microfone (e pedir outra permissão).
+- **Saída por app:** cada app ganha seu próprio aggregate device no dispositivo escolhido. Se o dispositivo for desconectado, o app volta para a saída padrão e retorna quando ele reaparecer. Não testado com AirPlay.
 
 - **API privada:** `responsibility_get_pid_responsible_for_pid`, via `dlsym`, só resolve o app dono de um processo auxiliar. Se não existir, o app cai na cadeia de processos pai e no prefixo do bundle ID. Não usa a API privada do TCC.
 - **AirPods/fone com microfone ativo:** o buffer do tap é escolhido pelo formato, não pela posição. Se o layout for ambíguo (ex.: tap estéreo + microfone estéreo), a sessão falha com erro em vez de mandar o buffer errado. Não testado com hardware real.

@@ -9,8 +9,9 @@ enum AppConstants {
     static let securitySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security")!
 
     static let onboardingDoneKey = "onboardingDone"
+    static let appearanceKey = "appearance"
     static let outputNoticeDuration: TimeInterval = 3
     static let silenceThreshold: TimeInterval = 5
-    static let maxListHeight: CGFloat = 308
-    static let windowWidth: CGFloat = 340
+    static let maxListHeight: CGFloat = 480
+    static let windowWidth: CGFloat = 400
 }

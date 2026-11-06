@@ -7,6 +7,7 @@ struct MixerApp: App {
 
     init() {
         SingleInstance.enforce()
+        AppearanceMode.current.apply()
     }
 
     var body: some Scene {
