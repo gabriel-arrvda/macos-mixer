@@ -65,7 +65,9 @@ final class GainControlTests: XCTestCase {
     func testTargetIsClampedAndNaNIgnored() {
         let gain = GainControl(sampleRate: 48_000, initialGain: 0.5)
         gain.setTarget(2)
-        XCTAssertEqual(gain.targetGain, 1)
+        XCTAssertEqual(gain.targetGain, 2)          // ganho extra até 400%
+        gain.setTarget(9)
+        XCTAssertEqual(gain.targetGain, 4)
         gain.setTarget(-1)
         XCTAssertEqual(gain.targetGain, 0)
         gain.setTarget(.nan)
@@ -118,6 +120,17 @@ final class AudioBufferListHelper {
 }
 
 final class ClippingTests: XCTestCase {
+    func testBoostAboveUnityIsStillClipped() {
+        let input: [Float] = [0.5, -0.5, 0.1]
+        var output = [Float](repeating: 0, count: 3)
+        var peak: Float = 0
+        _ = GainControl.apply(source: input, destination: &output, frames: 3, sourceChannels: 1,
+                              destinationChannels: 1, startGain: 4, targetGain: 4, step: 0.1, peak: &peak)
+        XCTAssertEqual(output[0], 1)
+        XCTAssertEqual(output[1], -1)
+        XCTAssertEqual(output[2], 0.4, accuracy: 1e-6)
+    }
+
     func testOutputIsClippedToUnitRange() {
         let input: [Float] = [5, -5, 0.5]
         var output = [Float](repeating: 0, count: 3)

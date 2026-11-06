@@ -45,9 +45,8 @@ public final class GainControl: @unchecked Sendable {
         Float(bitPattern: ca_exchange_u32(shared + 1, 0))
     }
 
-    static func clamp(_ gain: Float) -> Float {
-        gain.isNaN ? 1 : min(max(gain, 0), 1)
-    }
+    /// Limita a 0...`AppVolume.maxVolume` (até 400%). NaN vira 1.
+    static func clamp(_ gain: Float) -> Float { AppVolume.clamp(gain) }
 
     // MARK: - Thread de áudio
 
