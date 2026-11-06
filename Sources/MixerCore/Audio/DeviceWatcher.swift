@@ -3,12 +3,15 @@ import Foundation
 
 /// Avisa (na fila principal) quando a saída padrão muda ou quando a taxa de amostragem
 /// do dispositivo atual muda (acontece com Bluetooth ao trocar de perfil).
+/// `onDevicesChange` avisa quando um dispositivo é conectado ou removido.
 public final class DeviceWatcher {
     public var onChange: (() -> Void)?
+    public var onDevicesChange: (() -> Void)?
 
     private var watchedDevice = AudioObjectID(kAudioObjectUnknown)
     private var defaultDeviceListener: AudioObjectPropertyListenerBlock?
     private var rateListener: AudioObjectPropertyListenerBlock?
+    private var devicesListener: AudioObjectPropertyListenerBlock?
 
     public init() {}
 
@@ -21,6 +24,10 @@ public final class DeviceWatcher {
         var address = propertyAddress(kAudioHardwarePropertyDefaultOutputDevice)
         AudioObjectAddPropertyListenerBlock(systemObject, &address, .main, listener)
         defaultDeviceListener = listener
+        let devices: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.onDevicesChange?() }
+        var devicesAddress = propertyAddress(kAudioHardwarePropertyDevices)
+        AudioObjectAddPropertyListenerBlock(systemObject, &devicesAddress, .main, devices)
+        devicesListener = devices
         watchSampleRate()
     }
 
@@ -29,6 +36,11 @@ public final class DeviceWatcher {
             var address = propertyAddress(kAudioHardwarePropertyDefaultOutputDevice)
             AudioObjectRemovePropertyListenerBlock(systemObject, &address, .main, listener)
             defaultDeviceListener = nil
+        }
+        if let listener = devicesListener {
+            var address = propertyAddress(kAudioHardwarePropertyDevices)
+            AudioObjectRemovePropertyListenerBlock(systemObject, &address, .main, listener)
+            devicesListener = nil
         }
         unwatchSampleRate()
     }

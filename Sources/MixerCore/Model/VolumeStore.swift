@@ -44,6 +44,16 @@ public final class VolumeStore {
         defaults.set(value.isMuted, forKey: mutedKey(key))
     }
 
+    /// Saída escolhida pro app (UID do dispositivo). `nil` = segue a saída padrão do sistema.
+    public func loadOutput(_ key: String) -> String? {
+        defaults.string(forKey: outputKey(key))
+    }
+
+    public func saveOutput(_ uid: String?, for key: String) {
+        if let uid { defaults.set(uid, forKey: outputKey(key)) } else { defaults.removeObject(forKey: outputKey(key)) }
+    }
+
+    private func outputKey(_ key: String) -> String { "\(prefix).output.\(key)" }
     private func volumeKey(_ key: String) -> String { "\(prefix).volume.\(key)" }
     private func mutedKey(_ key: String) -> String { "\(prefix).muted.\(key)" }
 }

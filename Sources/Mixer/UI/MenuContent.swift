@@ -105,6 +105,7 @@ enum DeviceSymbol {
         case .builtIn: return "laptopcomputer"
         case .usb: return "hifispeaker"
         case .hdmi: return "tv"
+        case .airPlay: return "airplayaudio"
         case .other: return "speaker.wave.2"
         }
     }

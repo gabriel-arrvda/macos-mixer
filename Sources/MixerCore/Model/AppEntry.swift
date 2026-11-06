@@ -57,18 +57,22 @@ public enum SessionStatus: Equatable, Sendable {
 public struct AppEntry: Identifiable, Equatable, Sendable {
     public var id: String { owner.key }
     public let owner: AppOwner
-    /// Valor do slider (0...1). Com mudo, é o volume pra onde o som volta.
+    /// Valor do slider (0...4, 1 = 100%). Com mudo, é o volume pra onde o som volta.
     public var volume: Float
     public var isMuted: Bool
     public var isPlaying: Bool
     public var status: SessionStatus
+    /// Saída escolhida pro app, se for diferente da padrão e estiver conectada. `nil` = saída padrão.
+    public var outputUID: String?
 
-    public init(owner: AppOwner, volume: Float, isMuted: Bool, isPlaying: Bool, status: SessionStatus) {
+    public init(owner: AppOwner, volume: Float, isMuted: Bool, isPlaying: Bool, status: SessionStatus,
+                outputUID: String? = nil) {
         self.owner = owner
         self.volume = volume
         self.isMuted = isMuted
         self.isPlaying = isPlaying
         self.status = status
+        self.outputUID = outputUID
     }
 
     /// Ganho aplicado na thread de áudio.

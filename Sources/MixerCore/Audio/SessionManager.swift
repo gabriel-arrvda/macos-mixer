@@ -1,10 +1,10 @@
 import AppKit
 import Foundation
 
-/// Fábrica de verdade: tap, aggregate device e IOProc na saída padrão de agora.
+/// Fábrica de verdade: tap, aggregate device e IOProc na saída pedida (ou na padrão de agora).
 public enum LiveSessions {
     public static let factory: SessionFactory = { request in
-        let output = try OutputDevice.current()
+        let output = try request.outputUID.flatMap(OutputDevice.device(uid:)) ?? OutputDevice.current()
         return try TapSession(processObjects: request.objects, outputUID: output.uid,
                               fallbackSampleRate: output.nominalSampleRate(),
                               initialGain: request.initialGain, mode: request.mode)
@@ -16,6 +16,8 @@ public struct SessionRequest {
     public let objects: [UInt32]
     public let mode: SessionMode
     public let initialGain: Float
+    /// UID da saída escolhida pro app. `nil` = saída padrão.
+    public let outputUID: String?
 }
 
 public typealias SessionFactory = (SessionRequest) throws -> AudioSession
@@ -35,9 +37,13 @@ public final class SessionManager {
     public var onEntriesChange: (([AppEntry]) -> Void)?
     /// A saída padrão mudou (já com o novo dispositivo).
     public var onOutputChange: ((OutputDevice) -> Void)?
+    /// Um dispositivo de saída foi conectado ou removido.
+    public var onDevicesChange: (([OutputDevice]) -> Void)?
 
     public private(set) var entries: [AppEntry] = []
     public private(set) var output: OutputDevice?
+    /// Saídas disponíveis pra escolher, por app ou pro sistema.
+    public private(set) var devices: [OutputDevice] = []
     /// Verdadeiro depois que algum tap recebeu sinal diferente de zero: a permissão existe.
     /// Não é persistido, porque um rebuild pode perder a permissão.
     public private(set) var permissionConfirmed = false
@@ -64,6 +70,8 @@ public final class SessionManager {
     private var presence: PresenceTracker
     private var slots: [String: Slot] = [:]
     private var settings: [String: AppVolume] = [:]
+    private var routes: [String: String?] = [:]
+    private var devicesChangeWork: DispatchWorkItem?
     private var dirtyKeys: Set<String> = []
     private var timer: Timer?
     private var deviceChangeWork: DispatchWorkItem?
@@ -85,8 +93,12 @@ public final class SessionManager {
         guard timer == nil else { return }
         installTerminationObserver()
         output = try? OutputDevice.current()
+        devices = OutputDevice.all()
         watcher.onChange = { [weak self] in
             MainActor.assumeIsolated { self?.scheduleDeviceRebuild() }
+        }
+        watcher.onDevicesChange = { [weak self] in
+            MainActor.assumeIsolated { self?.scheduleDevicesRefresh() }
         }
         watcher.start()
         timer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
@@ -110,6 +122,7 @@ public final class SessionManager {
         timer = nil
         watcher.stop()
         deviceChangeWork?.cancel()
+        devicesChangeWork?.cancel()
         flushSettings()
         slots.values.forEach { $0.session?.stop() }
         slots.removeAll()
@@ -134,6 +147,22 @@ public final class SessionManager {
 
     public func toggleMute(for key: String) {
         setMuted(!setting(for: key).isMuted, for: key)
+    }
+
+    /// Escolhe em qual saída o app toca. `nil`, ou a própria saída padrão, volta a seguir o sistema.
+    /// A sessão é recriada na hora no novo dispositivo.
+    public func setOutput(_ uid: String?, for key: String) {
+        let normalized = (uid == nil || uid == output?.uid) ? nil : uid
+        guard route(for: key) != normalized else { return }
+        routes[key] = .some(normalized)
+        store.saveOutput(normalized, for: key)
+        if let mode = slots[key]?.mode { rebuild(key, mode: mode) }
+        publish()
+    }
+
+    /// Troca a saída padrão do sistema. Os apps que seguem o padrão vão junto (via `DeviceWatcher`).
+    public func setSystemOutput(_ device: OutputDevice) {
+        try? OutputDevice.setDefault(device)
     }
 
     /// Tenta de novo as sessões que desistiram de vez.
@@ -253,7 +282,8 @@ public final class SessionManager {
         let objects = slot.group.objectIDs
         do {
             slot.session = try factory(SessionRequest(objects: objects, mode: mode,
-                                                      initialGain: setting(for: key).effectiveGain))
+                                                      initialGain: setting(for: key).effectiveGain,
+                                                      outputUID: availableRoute(for: key)))
             slot.coveredObjects = Set(objects)
             slot.status = .active
             slot.failures = 0
@@ -294,7 +324,8 @@ public final class SessionManager {
     private func rebuildForNewDevice() {
         guard let device = try? OutputDevice.current() else { return }
         output = device
-        for key in slots.keys {
+        // Quem tem saída própria (e conectada) não muda; só quem segue o padrão é recriado.
+        for key in slots.keys where availableRoute(for: key) == nil {
             slots[key]?.session?.stop()
             slots[key]?.session = nil
             slots[key]?.needsSession = true
@@ -304,6 +335,42 @@ public final class SessionManager {
         }
         onOutputChange?(device)
         refresh()
+    }
+
+    private func scheduleDevicesRefresh() {
+        devicesChangeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.refreshDevices(OutputDevice.all()) }
+        }
+        devicesChangeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.deviceChangeDelay, execute: work)
+    }
+
+    /// Atualiza a lista de saídas. App cuja saída escolhida sumiu (ou voltou) é recriado.
+    func refreshDevices(_ list: [OutputDevice]) {
+        guard list != devices else { return }
+        let before = Dictionary(uniqueKeysWithValues: slots.keys.map { ($0, availableRoute(for: $0)) })
+        devices = list
+        for (key, previous) in before where availableRoute(for: key) != previous {
+            if let mode = slots[key]?.mode { rebuild(key, mode: mode) }
+        }
+        onDevicesChange?(devices)
+        publish()
+    }
+
+    // MARK: - Saída por app
+
+    private func route(for key: String) -> String? {
+        if let cached = routes[key] { return cached }
+        let loaded = store.loadOutput(key)
+        routes[key] = .some(loaded)
+        return loaded
+    }
+
+    /// A saída escolhida, se ainda estiver conectada. Antes de `start` (lista vazia), confia no que foi salvo.
+    private func availableRoute(for key: String) -> String? {
+        guard let uid = route(for: key) else { return nil }
+        return devices.isEmpty || devices.contains(where: { $0.uid == uid }) ? uid : nil
     }
 
     // MARK: - Volume
@@ -347,7 +414,8 @@ public final class SessionManager {
             .map { slot in
                 let value = setting(for: slot.group.owner.key)
                 return AppEntry(owner: slot.group.owner, volume: value.volume, isMuted: value.isMuted,
-                                isPlaying: slot.group.isPlaying, status: slot.status)
+                                isPlaying: slot.group.isPlaying, status: slot.status,
+                                outputUID: availableRoute(for: slot.group.owner.key))
             }
         onEntriesChange?(entries)
     }

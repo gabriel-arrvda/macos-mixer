@@ -46,6 +46,37 @@ final class SessionStateTests: XCTestCase {
                  playingObjectIDs: playing ?? objects)
     }
 
+    // MARK: - Saída por app
+
+    func testSetOutputRecreatesSessionOnChosenDeviceAndPersists() {
+        let engine = FakeEngine()
+        let defaults = UserDefaults(suiteName: "route.\(UUID().uuidString)")!
+        let store = VolumeStore(defaults: defaults, prefix: "t")
+        let manager = SessionManager(store: store, now: { engine.clock }, factory: engine.factory)
+        manager.apply(groups: [group([10])])
+        XCTAssertNil(engine.requests.last?.outputUID)
+        manager.setOutput("airpods", for: owner.key)
+        XCTAssertEqual(engine.requests.last?.outputUID, "airpods")
+        XCTAssertEqual(engine.liveSessions.count, 1)            // a sessão antiga foi desfeita
+        XCTAssertEqual(manager.entries.first?.outputUID, "airpods")
+        XCTAssertEqual(store.loadOutput(owner.key), "airpods")
+        manager.setOutput(nil, for: owner.key)
+        XCTAssertNil(engine.requests.last?.outputUID)
+        XCTAssertNil(store.loadOutput(owner.key))
+    }
+
+    func testRemovedDeviceFallsBackToDefault() {
+        let engine = FakeEngine()
+        let manager = makeManager(engine)
+        manager.refreshDevices([OutputDevice(id: 1, uid: "mbp", name: "MacBook", transport: .builtIn),
+                                OutputDevice(id: 2, uid: "airpods", name: "AirPods", transport: .bluetooth)])
+        manager.apply(groups: [group([10])])
+        manager.setOutput("airpods", for: owner.key)
+        manager.refreshDevices([OutputDevice(id: 1, uid: "mbp", name: "MacBook", transport: .builtIn)])
+        XCTAssertNil(engine.requests.last?.outputUID)
+        XCTAssertNil(manager.entries.first?.outputUID)
+    }
+
     // MARK: - Tap em duas fases
 
     func testNewSessionStartsProbingAndStaysThereWithoutSignal() {
