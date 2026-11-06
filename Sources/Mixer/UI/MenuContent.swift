@@ -16,6 +16,7 @@ struct MenuContent: View {
             }
         }
         .frame(width: AppConstants.windowWidth)
+        .sizesMenuWindowToFit()
         .onExitCommand { NSApp.keyWindow?.orderOut(nil) }
         .onAppear { AppearanceMode.current.apply() }
     }
@@ -168,7 +169,7 @@ private struct AppList: View {
     private static let rowHeight: CGFloat = 112
 
     var body: some View {
-        let list = LazyVStack(spacing: 2) {
+        let list = VStack(spacing: 2) {
             ForEach(state.entries) { entry in
                 AppRow(entry: entry, devices: state.devices, systemOutput: state.output, levels: state.levels,
                        isSelected: selection == entry.id,
