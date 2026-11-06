@@ -35,9 +35,9 @@ public enum SystemAudio {
         let clamped = min(max(value.isNaN ? 0 : value, 0), 1)
         let scope = scope(direction)
         var main = mainVolumeAddress(scope)
-        if AudioHardwareServiceHasProperty(device, &main) {
+        if AudioObjectHasProperty(device, &main) {
             var data = Float32(clamped)
-            if AudioHardwareServiceSetPropertyData(device, &main, 0, nil, UInt32(MemoryLayout<Float32>.size), &data) == noErr {
+            if AudioObjectSetPropertyData(device, &main, 0, nil, UInt32(MemoryLayout<Float32>.size), &data) == noErr {
                 return
             }
         }
@@ -77,10 +77,10 @@ public enum SystemAudio {
     /// Volume "virtual" do dispositivo (o que o teclado usa); se não houver, o do canal principal ou a média dos canais.
     private static func volume(_ device: AudioDeviceID, scope: AudioObjectPropertyScope) -> Float? {
         var main = mainVolumeAddress(scope)
-        if AudioHardwareServiceHasProperty(device, &main) {
+        if AudioObjectHasProperty(device, &main) {
             var value = Float32(0)
             var size = UInt32(MemoryLayout<Float32>.size)
-            if AudioHardwareServiceGetPropertyData(device, &main, 0, nil, &size, &value) == noErr { return value }
+            if AudioObjectGetPropertyData(device, &main, 0, nil, &size, &value) == noErr { return value }
         }
         let values: [Float] = volumeElements(device, scope: scope).compactMap { element in
             var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: scope, mElement: element)
