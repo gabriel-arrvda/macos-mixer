@@ -105,7 +105,7 @@ final class VolumeStoreTests: XCTestCase {
         defaults.set(7.0, forKey: "mixer.volume.big")
         defaults.set(-3.0, forKey: "mixer.volume.neg")
         defaults.set("lixo", forKey: "mixer.volume.bad")
-        XCTAssertEqual(store.load("big").volume, 1)
+        XCTAssertEqual(store.load("big").volume, 4)   // teto de 400%
         XCTAssertEqual(store.load("neg").volume, 0)
         XCTAssertEqual(store.load("bad").volume, 1)
     }

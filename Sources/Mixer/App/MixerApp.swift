@@ -14,6 +14,8 @@ struct MixerApp: App {
             MenuContent(state: state)
         } label: {
             MenuBarLabel(attention: state.needsAttention)
+                // O ícone da barra aparece logo na abertura: é quando o NSApp já existe pra receber o tema.
+                .task { AppearanceMode.current.apply() }
         }
         .menuBarExtraStyle(.window)
     }
