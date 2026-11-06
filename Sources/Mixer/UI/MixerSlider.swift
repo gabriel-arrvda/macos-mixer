@@ -1,66 +1,121 @@
 import AppKit
 import SwiftUI
 
-/// Slider próprio porque o `Slider` nativo não deixa trocar o knob pelo marcador vazado do mudo.
-/// Teclado: ←/→ mudam 5%, ⌥←/⌥→ mudam 1%.
+/// Escala do fader. Até 100% é linear; com ganho extra (até 400%), o 100% ("U") fica em 62,5% do trilho
+/// e o resto do trilho cobre 100%...400%, pra o ajuste fino do volume normal não ficar espremido.
+struct FaderScale {
+    let maxValue: Float
+    static let unityPosition: CGFloat = 0.625
+
+    var unity: CGFloat { maxValue > 1 ? Self.unityPosition : 1 }
+
+    func position(of value: Float) -> CGFloat {
+        let value = min(max(value, 0), maxValue)
+        guard maxValue > 1 else { return CGFloat(value) }
+        if value <= 1 { return CGFloat(value) * unity }
+        return unity + CGFloat((value - 1) / (maxValue - 1)) * (1 - unity)
+    }
+
+    func value(at position: CGFloat) -> Float {
+        let position = min(max(position, 0), 1)
+        guard maxValue > 1 else { return Float(position) }
+        if position <= unity { return Float(position / unity) }
+        return 1 + Float((position - unity) / (1 - unity)) * (maxValue - 1)
+    }
+}
+
+/// Fader com marcas, "U" no 100% e trilho na cor do app. O knob é retangular, como numa mesa de som.
+/// Arrastar perto do 100% gruda no 100%. O teclado é tratado pela lista (↑↓ escolhem, ←→ ajustam).
 struct MixerSlider: View {
     let value: Float
+    let maxValue: Float
     let isMuted: Bool
     let isEnabled: Bool
+    let tint: Color
     let label: String
     let onChange: (Float) -> Void
 
-    private let knob: CGFloat = 12
-    private let trackHeight: CGFloat = 4
+    private let knobSize = CGSize(width: 14, height: 22)
+    private let trackHeight: CGFloat = 3
+
+    private var scale: FaderScale { FaderScale(maxValue: maxValue) }
 
     var body: some View {
-        GeometryReader { proxy in
-            let travel = max(proxy.size.width - knob, 1)
-            let x = CGFloat(value) * travel
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.18)).frame(height: trackHeight)
-                Capsule().fill(Color.accentColor).frame(width: x + knob / 2, height: trackHeight)
-                    .opacity(isMuted ? 0 : 1)
-                marker.offset(x: x)
+        VStack(spacing: 2) {
+            GeometryReader { proxy in
+                let travel = max(proxy.size.width - knobSize.width, 1)
+                let x = scale.position(of: value) * travel
+                ZStack(alignment: .topLeading) {
+                    ticks(width: proxy.size.width, travel: travel)
+                        .offset(y: 17)
+                    Capsule().fill(Color.primary.opacity(0.16))
+                        .frame(height: trackHeight).offset(y: 10)
+                    Capsule().fill(isMuted ? Color.secondary.opacity(0.5) : tint)
+                        .frame(width: x + knobSize.width / 2, height: trackHeight).offset(y: 10)
+                    knob.offset(x: x)
+                }
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                    guard isEnabled else { return }
+                    var next = scale.value(at: (drag.location.x - knobSize.width / 2) / travel)
+                    if maxValue > 1, abs(next - 1) < 0.04 { next = 1 }
+                    onChange(next)
+                })
             }
-            .opacity(isMuted ? 0.35 : 1)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
-                guard isEnabled else { return }
-                onChange(Float(min(max((drag.location.x - knob / 2) / travel, 0), 1)))
-            })
+            .frame(height: 24)
+            labels
         }
-        .frame(height: 20)
         .opacity(isEnabled ? 1 : 0.4)
-        .focusable(isEnabled)
-        .onMoveCommand { direction in
-            let step: Float = NSEvent.modifierFlags.contains(.option) ? 0.01 : 0.05
-            switch direction {
-            case .left, .down: onChange(max(value - step, 0))
-            case .right, .up: onChange(min(value + step, 1))
-            default: break
-            }
-        }
         .accessibilityElement()
         .accessibilityLabel(label)
         .accessibilityValue(isMuted ? "Mudo" : "\(Int((value * 100).rounded())) por cento")
         .accessibilityAdjustableAction { direction in
             switch direction {
-            case .increment: onChange(min(value + 0.05, 1))
+            case .increment: onChange(min(value + 0.05, maxValue))
             case .decrement: onChange(max(value - 0.05, 0))
             @unknown default: break
             }
         }
     }
 
-    @ViewBuilder private var marker: some View {
-        if isMuted {
-            // Fader-fantasma: mostra pra onde o volume volta ao reativar.
-            Circle().strokeBorder(Color.secondary, lineWidth: 1.5).frame(width: knob, height: knob)
-        } else {
-            Circle().fill(.white).frame(width: knob, height: knob)
-                .shadow(color: .black.opacity(0.3), radius: 1, y: 0.5)
+    private var knob: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(Color(nsColor: .controlColor))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+            .overlay(Rectangle().fill(isMuted ? Color.secondary : Color.primary.opacity(0.85)).frame(width: 2, height: 12))
+            .frame(width: knobSize.width, height: knobSize.height)
+            .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+    }
+
+    private func ticks(width: CGFloat, travel: CGFloat) -> some View {
+        Canvas { context, size in
+            let count = maxValue > 1 ? 16 : 8
+            for index in 0...count {
+                let x = knobSize.width / 2 + CGFloat(index) / CGFloat(count) * travel
+                context.fill(Path(CGRect(x: x - 0.5, y: 0, width: 1, height: 4)), with: .color(.primary.opacity(0.18)))
+            }
+            let unityX = knobSize.width / 2 + scale.unity * travel
+            context.fill(Path(CGRect(x: unityX - 0.5, y: -1, width: 1, height: 6)), with: .color(Palette.boost))
         }
+        .frame(width: width, height: 6)
+        .allowsHitTesting(false)
+    }
+
+    private var labels: some View {
+        GeometryReader { proxy in
+            let travel = max(proxy.size.width - knobSize.width, 1)
+            let origin = knobSize.width / 2
+            ZStack(alignment: .topLeading) {
+                mark("∞").position(x: origin, y: 6)
+                mark("U", color: Palette.boost).position(x: origin + scale.unity * travel, y: 6)
+                if maxValue > 1 { mark("\(Int(maxValue))×").position(x: origin + travel, y: 6) }
+            }
+        }
+        .frame(height: 12)
+        .accessibilityHidden(true)
+    }
+
+    private func mark(_ text: String, color: Color = .secondary) -> some View {
+        Text(text).font(.system(size: 9, design: .monospaced)).foregroundStyle(color.opacity(0.8))
     }
 }
